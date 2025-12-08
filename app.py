@@ -7,6 +7,18 @@ import plotly.express as px
 # --- 1. APP CONFIG ---
 st.set_page_config(page_title="Pro Trading Journal", layout="wide")
 
+
+# --- HIDE STREAMLIT BRANDING ---
+hide_st_style = """
+            <style>
+            #MainMenu {visibility: hidden;}
+            footer {visibility: hidden;}
+            header {visibility: hidden;}
+            </style>
+            """
+st.markdown(hide_st_style, unsafe_allow_html=True)
+
+
 # --- 2. AUTHENTICATION SYSTEM ---
 def check_login():
     if "logged_in" not in st.session_state:
