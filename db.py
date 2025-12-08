@@ -17,16 +17,14 @@ def get_engine():
 engine = get_engine()
 
 def run_query(query, params=None):
+    """Helper to run queries safely."""
     with engine.connect() as conn:
-        # text() ensures the query is treated safely
         result = conn.execute(text(query), params or {})
         conn.commit()
         return result
 
 def init_db():
-    """
-    Self-Healing Database Setup.
-    """
+    """Self-Healing Database Setup."""
     # 1. Create Accounts Table
     run_query("""
         CREATE TABLE IF NOT EXISTS accounts (
@@ -62,7 +60,7 @@ def init_db():
         );
     """)
 
-    # 3. MIGRATION CHECK (Add columns if missing)
+    # 3. MIGRATION CHECK
     with engine.connect() as conn:
         res = conn.execute(text("SELECT column_name FROM information_schema.columns WHERE table_name='accounts' AND column_name='username';"))
         if res.rowcount == 0:
@@ -103,12 +101,15 @@ def delete_account(account_id):
     run_query("DELETE FROM accounts WHERE id = :id", {'id': account_id})
 
 def get_accounts(username):
-    # --- FIX IS HERE ---
-    # We wrap the query string in text() so SQLAlchemy handles the parameter correctly
+    # --- THIS IS THE FIX ---
+    # We do NOT use pd.read_sql here because it fails with parameters.
+    # We use conn.execute() directly.
     query = text("SELECT * FROM accounts WHERE username = :user")
     
     with engine.connect() as conn:
-        return pd.read_sql(query, conn, params={'user': username})
+        result = conn.execute(query, {'user': username})
+        # Convert to DataFrame manually
+        return pd.DataFrame(result.fetchall(), columns=result.keys())
 
 def get_trades(account_id=None):
     query_str = "SELECT * FROM trades"
@@ -118,9 +119,11 @@ def get_trades(account_id=None):
         query_str += " WHERE account_id = :acc_id"
         params = {'acc_id': account_id}
     
-    # --- FIX IS HERE TOO ---
+    query = text(query_str)
+    
     with engine.connect() as conn:
-        df = pd.read_sql(text(query_str), conn, params=params)
+        result = conn.execute(query, params)
+        df = pd.DataFrame(result.fetchall(), columns=result.keys())
     
     if not df.empty:
         df['entry_date'] = pd.to_datetime(df['entry_date'])
