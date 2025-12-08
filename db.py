@@ -7,6 +7,7 @@ import streamlit as st
 # --- 1. ROBUST CONNECTION MANAGER ---
 def get_engine():
     try:
+        # Load the URL from secrets
         db_url = st.secrets["supabase"]["DB_URL"]
         return create_engine(db_url)
     except Exception as e:
@@ -17,20 +18,20 @@ engine = get_engine()
 
 def run_query(query, params=None):
     with engine.connect() as conn:
+        # text() ensures the query is treated safely
         result = conn.execute(text(query), params or {})
         conn.commit()
         return result
 
 def init_db():
     """
-    Self-Healing Database.
-    Now adds a 'username' column to support multi-user isolation.
+    Self-Healing Database Setup.
     """
     # 1. Create Accounts Table
     run_query("""
         CREATE TABLE IF NOT EXISTS accounts (
             id SERIAL PRIMARY KEY,
-            username TEXT,          -- NEW: Tracks who owns the account
+            username TEXT,
             name TEXT NOT NULL,
             account_type TEXT,
             initial_balance REAL,
@@ -61,15 +62,13 @@ def init_db():
         );
     """)
 
-    # 3. SMART MIGRATION (Add 'username' if missing)
+    # 3. MIGRATION CHECK (Add columns if missing)
     with engine.connect() as conn:
-        # Check for 'username' in accounts table
         res = conn.execute(text("SELECT column_name FROM information_schema.columns WHERE table_name='accounts' AND column_name='username';"))
         if res.rowcount == 0:
             conn.execute(text("ALTER TABLE accounts ADD COLUMN username TEXT;"))
             conn.commit()
         
-        # Check for 'quantity' in trades table
         res_qty = conn.execute(text("SELECT column_name FROM information_schema.columns WHERE table_name='trades' AND column_name='quantity';"))
         if res_qty.rowcount == 0:
             conn.execute(text("ALTER TABLE trades ADD COLUMN quantity REAL DEFAULT 0;"))
@@ -104,7 +103,8 @@ def delete_account(account_id):
     run_query("DELETE FROM accounts WHERE id = :id", {'id': account_id})
 
 def get_accounts(username):
-    # FIXED: Wrapped query in text() to handle ':user' variable correctly
+    # --- FIX IS HERE ---
+    # We wrap the query string in text() so SQLAlchemy handles the parameter correctly
     query = text("SELECT * FROM accounts WHERE username = :user")
     
     with engine.connect() as conn:
@@ -118,7 +118,7 @@ def get_trades(account_id=None):
         query_str += " WHERE account_id = :acc_id"
         params = {'acc_id': account_id}
     
-    # FIXED: Wrapped query in text() here as well
+    # --- FIX IS HERE TOO ---
     with engine.connect() as conn:
         df = pd.read_sql(text(query_str), conn, params=params)
     
