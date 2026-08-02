@@ -1,8 +1,8 @@
-# app.py
 import streamlit as st
 import pandas as pd
 import db
 import plotly.express as px
+import io
 
 # --- 1. APP CONFIG ---
 st.set_page_config(page_title="Pro Trading Journal", layout="wide")
@@ -119,15 +119,21 @@ with st.sidebar:
     
     with st.expander("⚙️ Manage Accounts"):
         st.caption("Add New Account")
+        a_type = st.selectbox("Type", ["3-Step", "2-Step", "Instant", "Personal Broker"], key="acc_type_select")
+        
         with st.form("add_account_form", clear_on_submit=True):
-            a_name = st.text_input("Account Name (e.g., QT 1.25k)")
-            a_type = st.selectbox("Type", ["3-Step", "2-Step", "Instant"])
+            a_name = st.text_input("Account Name (e.g., QT 1.25k or Personal)")
             a_bal = st.number_input("Initial Balance", value=5000.0)
-            a_target = st.number_input("Target Payout/Pass Balance", value=5500.0)
-            a_loss = st.number_input("Max Drawdown Level (Equity)", value=4500.0)
+            
+            # Show Prop Firm parameters only if account is not Personal Broker
+            if a_type != "Personal Broker":
+                a_target = st.number_input("Target Payout/Pass Balance", value=5500.0)
+                a_loss = st.number_input("Max Drawdown Level (Equity)", value=4500.0)
+            else:
+                a_target = 0.0
+                a_loss = 0.0
             
             if st.form_submit_button("Add Account"):
-                # PASS CURRENT USERNAME TO DB
                 db.add_account(st.session_state['user'], a_name, a_type, a_bal, a_target, a_loss)
                 st.success("Account Added!")
                 st.rerun()
@@ -151,10 +157,8 @@ if not accounts_df.empty:
     
     # If "All Accounts", we need to sum up ONLY this user's accounts
     if selected_id == "All Accounts":
-        # Get all trade IDs belonging to this user's accounts
         user_account_ids = list(account_options.values())
         if user_account_ids:
-            # Fetch all trades, then filter in Pandas (Simple approach)
             all_trades = db.get_trades() 
             trades = all_trades[all_trades['account_id'].isin(user_account_ids)]
         else:
@@ -180,26 +184,28 @@ if not accounts_df.empty:
         k4.metric("Total Trades", total_trades)
         k5.metric("Total Lots", f"{total_lots:.2f}")
 
-        # PROP FIRM TRACKER (Only for Single Account View)
+        # PROP FIRM TRACKER (Only for Single Account View & Non-Personal Brokers)
         if view_selection != "All Accounts":
             curr_acc = accounts_df[accounts_df['id'] == selected_id].iloc[0]
-            current_equity = curr_acc['initial_balance'] + total_pnl
             
-            st.markdown("### 🎯 Challenge Progress")
-            p1, p2 = st.columns(2)
-            
-            dist_pass = curr_acc['target_payout'] - current_equity
-            if dist_pass <= 0:
-                p1.success(f"🏆 PASSED! Current Equity: ${current_equity:,.2f}")
-            else:
-                p1.info(f"Target: ${curr_acc['target_payout']:,.0f} | Current: ${current_equity:,.0f}")
-                target_gain = curr_acc['target_payout'] - curr_acc['initial_balance']
-                current_gain = current_equity - curr_acc['initial_balance']
-                progress = current_gain / target_gain if target_gain != 0 else 0
-                p1.progress(min(1.0, max(0.0, progress)))
-            
-            dist_breach = current_equity - curr_acc['max_drawdown_limit']
-            p2.warning(f"Drawdown Buffer: ${dist_breach:,.2f}")
+            if curr_acc.get('account_type') != "Personal Broker":
+                current_equity = curr_acc['initial_balance'] + total_pnl
+                
+                st.markdown("### 🎯 Challenge Progress")
+                p1, p2 = st.columns(2)
+                
+                dist_pass = curr_acc['target_payout'] - current_equity
+                if dist_pass <= 0:
+                    p1.success(f"🏆 PASSED! Current Equity: ${current_equity:,.2f}")
+                else:
+                    p1.info(f"Target: ${curr_acc['target_payout']:,.0f} | Current: ${current_equity:,.0f}")
+                    target_gain = curr_acc['target_payout'] - curr_acc['initial_balance']
+                    current_gain = current_equity - curr_acc['initial_balance']
+                    progress = current_gain / target_gain if target_gain != 0 else 0
+                    p1.progress(min(1.0, max(0.0, progress)))
+                
+                dist_breach = current_equity - curr_acc['max_drawdown_limit']
+                p2.warning(f"Drawdown Buffer: ${dist_breach:,.2f}")
 
         st.markdown("---")
 
@@ -243,6 +249,43 @@ if not accounts_df.empty:
             weekday_perf = trades.groupby('weekday')['pnl'].sum().reindex(days_order).fillna(0).reset_index()
             fig_weekday = px.line(weekday_perf, x='weekday', y='pnl', title="Performance by Weekday", markers=True)
             st.plotly_chart(fig_weekday, use_container_width=True)
+
+        st.markdown("---")
+
+        # EXPORT DATA SECTION
+        with st.expander("📥 Export Trades to Excel"):
+            st.markdown("#### Select Date Range to Export Data")
+            ex_c1, ex_c2, ex_c3 = st.columns([2, 2, 1])
+            
+            min_date = trades['entry_date'].min().date() if not trades.empty else pd.Timestamp.now().date()
+            max_date = trades['entry_date'].max().date() if not trades.empty else pd.Timestamp.now().date()
+            
+            start_date = ex_c1.date_input("Start Date", value=min_date, key="exp_start_date")
+            end_date = ex_c2.date_input("End Date", value=max_date, key="exp_end_date")
+            
+            # Filter trades by date timeline
+            filtered_trades = trades[
+                (trades['entry_date'].dt.date >= start_date) & 
+                (trades['entry_date'].dt.date <= end_date)
+            ]
+            
+            st.caption(f"Found **{len(filtered_trades)}** trade(s) in selected range.")
+            
+            if not filtered_trades.empty:
+                # Convert DataFrame to Excel buffer
+                excel_buffer = io.BytesIO()
+                with pd.ExcelWriter(excel_buffer, engine='openpyxl') as writer:
+                    filtered_trades.to_excel(writer, index=False, sheet_name='Trades')
+                
+                ex_c3.markdown("<br>", unsafe_allow_html=True)
+                ex_c3.download_button(
+                    label="📥 Download Excel",
+                    data=excel_buffer.getvalue(),
+                    file_name=f"trades_{start_date}_to_{end_date}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                )
+            else:
+                st.info("No trades found within the selected date range.")
 
         with st.expander("📄 View Detailed Trade Log"):
             st.dataframe(trades.sort_values(by='id', ascending=False))
