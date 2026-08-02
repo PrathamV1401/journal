@@ -35,7 +35,6 @@ def check_login():
         submit = st.form_submit_button("Login")
 
         if submit:
-            # Check against secrets.toml
             if username in st.secrets["passwords"] and st.secrets["passwords"][username] == password:
                 st.session_state["logged_in"] = True
                 st.session_state["user"] = username
@@ -67,7 +66,6 @@ st.title("📊 Trading Journal by SaversPoke")
 with st.sidebar:
     st.header("📝 Log New Trade")
     
-    # FILTER ACCOUNTS FOR CURRENT USER ONLY
     accounts_df = db.get_accounts(st.session_state['user'])
     
     if accounts_df.empty:
@@ -79,16 +77,24 @@ with st.sidebar:
     selected_account_name = st.selectbox("Select Account", options=list(account_options.keys()))
     
     if selected_account_name:
+        # Dynamically fetch account currency for PnL text
+        acc_row = accounts_df[accounts_df['name'] == selected_account_name].iloc[0]
+        acc_currency = acc_row.get('currency', '$')
+        if pd.isna(acc_currency) or not acc_currency:
+            acc_currency = '$'
+
         with st.form("trade_form", clear_on_submit=True):
             c1, c2 = st.columns(2)
-            s_symbol = c1.selectbox("Symbol", ["XAUUSD", "USDJPY", "EURUSD", "GBPUSD", "Other"])
+            # Custom symbol input 
+            s_symbol = c1.text_input("Symbol", placeholder="e.g., AAPL, XAUUSD")
             s_direction = c2.radio("Direction", ["Long", "Short"], horizontal=True)
             
             c3, c4 = st.columns(2)
             s_date = c3.date_input("Date")
-            s_qty = c4.number_input("Quantity (Lots)", min_value=0.01, step=0.01, value=0.01)
+            s_qty = c4.number_input("Quantity (Lots/Shares)", min_value=0.01, step=0.01, value=0.01)
             
-            s_pnl = st.number_input("PnL ($)", step=0.01)
+            # Dynamic Currency text
+            s_pnl = st.number_input(f"PnL ({acc_currency})", step=0.01)
 
             st.markdown("---")
             st.markdown("**🧠 Strategy & Context**")
@@ -107,13 +113,17 @@ with st.sidebar:
             
             submitted = st.form_submit_button("Log Trade")
             if submitted:
-                status = "Win" if s_pnl > 0 else ("Loss" if s_pnl < 0 else "BE")
-                db.add_trade(
-                    account_options[selected_account_name], s_symbol, s_direction, s_date, s_qty, s_pnl, status,
-                    s_session, s_rules, s_trend, s_setup, s_proper_sl, s_event_str, s_notes
-                )
-                st.success("Trade Logged Successfully!")
-                st.rerun()
+                # Ensure a symbol was typed
+                if not s_symbol.strip():
+                    st.error("Please enter a valid Symbol.")
+                else:
+                    status = "Win" if s_pnl > 0 else ("Loss" if s_pnl < 0 else "BE")
+                    db.add_trade(
+                        account_options[selected_account_name], s_symbol.upper(), s_direction, s_date, s_qty, s_pnl, status,
+                        s_session, s_rules, s_trend, s_setup, s_proper_sl, s_event_str, s_notes
+                    )
+                    st.success("Trade Logged Successfully!")
+                    st.rerun()
 
     st.markdown("---")
     
@@ -123,9 +133,9 @@ with st.sidebar:
         
         with st.form("add_account_form", clear_on_submit=True):
             a_name = st.text_input("Account Name (e.g., QT 1.25k or Personal)")
+            a_currency = st.selectbox("Currency", ["$", "₹"])
             a_bal = st.number_input("Initial Balance", value=5000.0)
             
-            # Show Prop Firm parameters only if account is not Personal Broker
             if a_type != "Personal Broker":
                 a_target = st.number_input("Target Payout/Pass Balance", value=5500.0)
                 a_loss = st.number_input("Max Drawdown Level (Equity)", value=4500.0)
@@ -134,7 +144,7 @@ with st.sidebar:
                 a_loss = 0.0
             
             if st.form_submit_button("Add Account"):
-                db.add_account(st.session_state['user'], a_name, a_type, a_bal, a_target, a_loss)
+                db.add_account(st.session_state['user'], a_name, a_type, a_currency, a_bal, a_target, a_loss)
                 st.success("Account Added!")
                 st.rerun()
         
@@ -155,8 +165,12 @@ if not accounts_df.empty:
     view_selection = st.selectbox("View Metrics For:", filter_options)
     selected_id = account_options[view_selection] if view_selection != "All Accounts" else "All Accounts"
     
-    # If "All Accounts", we need to sum up ONLY this user's accounts
+    # Establish dynamic currency for Dashboard
     if selected_id == "All Accounts":
+        # Check if all accounts share the same currency
+        unique_currencies = accounts_df['currency'].dropna().unique()
+        disp_curr = unique_currencies[0] if len(unique_currencies) == 1 else ""
+        
         user_account_ids = list(account_options.values())
         if user_account_ids:
             all_trades = db.get_trades() 
@@ -164,6 +178,11 @@ if not accounts_df.empty:
         else:
             trades = pd.DataFrame()
     else:
+        curr_acc = accounts_df[accounts_df['id'] == selected_id].iloc[0]
+        disp_curr = curr_acc.get('currency', '$')
+        if pd.isna(disp_curr) or not disp_curr:
+            disp_curr = '$'
+            
         trades = db.get_trades(selected_id)
     
     if not trades.empty:
@@ -178,16 +197,15 @@ if not accounts_df.empty:
         profit_factor = gross_profit / gross_loss if gross_loss > 0 else gross_profit
 
         k1, k2, k3, k4, k5 = st.columns(5)
-        k1.metric("Net PnL", f"${total_pnl:,.2f}", delta_color="normal")
+        # Apply dynamic currency to Net PnL
+        k1.metric("Net PnL", f"{disp_curr}{total_pnl:,.2f}", delta_color="normal")
         k2.metric("Win Rate", f"{win_rate:.1f}%")
         k3.metric("Profit Factor", f"{profit_factor:.2f}")
         k4.metric("Total Trades", total_trades)
-        k5.metric("Total Lots", f"{total_lots:.2f}")
+        k5.metric("Total Qty", f"{total_lots:.2f}")
 
         # PROP FIRM TRACKER (Only for Single Account View & Non-Personal Brokers)
         if view_selection != "All Accounts":
-            curr_acc = accounts_df[accounts_df['id'] == selected_id].iloc[0]
-            
             if curr_acc.get('account_type') != "Personal Broker":
                 current_equity = curr_acc['initial_balance'] + total_pnl
                 
@@ -196,16 +214,16 @@ if not accounts_df.empty:
                 
                 dist_pass = curr_acc['target_payout'] - current_equity
                 if dist_pass <= 0:
-                    p1.success(f"🏆 PASSED! Current Equity: ${current_equity:,.2f}")
+                    p1.success(f"🏆 PASSED! Current Equity: {disp_curr}{current_equity:,.2f}")
                 else:
-                    p1.info(f"Target: ${curr_acc['target_payout']:,.0f} | Current: ${current_equity:,.0f}")
+                    p1.info(f"Target: {disp_curr}{curr_acc['target_payout']:,.0f} | Current: {disp_curr}{current_equity:,.0f}")
                     target_gain = curr_acc['target_payout'] - curr_acc['initial_balance']
                     current_gain = current_equity - curr_acc['initial_balance']
                     progress = current_gain / target_gain if target_gain != 0 else 0
                     p1.progress(min(1.0, max(0.0, progress)))
                 
                 dist_breach = current_equity - curr_acc['max_drawdown_limit']
-                p2.warning(f"Drawdown Buffer: ${dist_breach:,.2f}")
+                p2.warning(f"Drawdown Buffer: {disp_curr}{dist_breach:,.2f}")
 
         st.markdown("---")
 
@@ -215,7 +233,7 @@ if not accounts_df.empty:
         with tab1:
             c1, c2 = st.columns([2, 1])
             trades['cumulative_pnl'] = trades['pnl'].cumsum()
-            fig_equity = px.line(trades, x='id', y='cumulative_pnl', title='Equity Curve', markers=True)
+            fig_equity = px.line(trades, x='id', y='cumulative_pnl', title=f'Equity Curve ({disp_curr})', markers=True)
             c1.plotly_chart(fig_equity, use_container_width=True)
             fig_hist = px.histogram(trades, x="pnl", nbins=20, title="PnL Distribution", color="status")
             c2.plotly_chart(fig_hist, use_container_width=True)
@@ -263,7 +281,6 @@ if not accounts_df.empty:
             start_date = ex_c1.date_input("Start Date", value=min_date, key="exp_start_date")
             end_date = ex_c2.date_input("End Date", value=max_date, key="exp_end_date")
             
-            # Filter trades by date timeline
             filtered_trades = trades[
                 (trades['entry_date'].dt.date >= start_date) & 
                 (trades['entry_date'].dt.date <= end_date)
@@ -272,7 +289,6 @@ if not accounts_df.empty:
             st.caption(f"Found **{len(filtered_trades)}** trade(s) in selected range.")
             
             if not filtered_trades.empty:
-                # Convert DataFrame to Excel buffer
                 excel_buffer = io.BytesIO()
                 with pd.ExcelWriter(excel_buffer, engine='openpyxl') as writer:
                     filtered_trades.to_excel(writer, index=False, sheet_name='Trades')
