@@ -25,13 +25,14 @@ def run_query(query, params=None):
 
 def init_db():
     """Self-Healing Database Setup."""
-    # 1. Create Accounts Table
+    # 1. Create Accounts Table (Added Currency)
     run_query("""
         CREATE TABLE IF NOT EXISTS accounts (
             id SERIAL PRIMARY KEY,
             username TEXT,
             name TEXT NOT NULL,
             account_type TEXT,
+            currency TEXT,
             initial_balance REAL,
             target_payout REAL,
             max_drawdown_limit REAL
@@ -48,6 +49,7 @@ def init_db():
             entry_date TIMESTAMP,
             quantity REAL,
             pnl REAL,
+            risked_amount REAL,
             status TEXT,
             session TEXT,
             rules_followed TEXT,
@@ -62,36 +64,50 @@ def init_db():
 
     # 3. MIGRATION CHECK
     with engine.connect() as conn:
+        # Check and add username
         res = conn.execute(text("SELECT column_name FROM information_schema.columns WHERE table_name='accounts' AND column_name='username';"))
         if res.rowcount == 0:
             conn.execute(text("ALTER TABLE accounts ADD COLUMN username TEXT;"))
             conn.commit()
         
+        # Check and add currency
+        res_curr = conn.execute(text("SELECT column_name FROM information_schema.columns WHERE table_name='accounts' AND column_name='currency';"))
+        if res_curr.rowcount == 0:
+            conn.execute(text("ALTER TABLE accounts ADD COLUMN currency TEXT DEFAULT '$';"))
+            conn.commit()
+        
+        # Check and add quantity
         res_qty = conn.execute(text("SELECT column_name FROM information_schema.columns WHERE table_name='trades' AND column_name='quantity';"))
         if res_qty.rowcount == 0:
             conn.execute(text("ALTER TABLE trades ADD COLUMN quantity REAL DEFAULT 0;"))
             conn.commit()
 
+        # Check and add risked_amount
+        res_risk = conn.execute(text("SELECT column_name FROM information_schema.columns WHERE table_name='trades' AND column_name='risked_amount';"))
+        if res_risk.rowcount == 0:
+            conn.execute(text("ALTER TABLE trades ADD COLUMN risked_amount REAL DEFAULT 0;"))
+            conn.commit()
+
 # --- DATA FUNCTIONS ---
 
-def add_account(username, name, acc_type, balance, target, drawdown):
+def add_account(username, name, acc_type, currency, balance, target, drawdown):
     run_query("""
-        INSERT INTO accounts (username, name, account_type, initial_balance, target_payout, max_drawdown_limit)
-        VALUES (:user, :name, :type, :bal, :target, :dd)
-    """, {'user': username, 'name': name, 'type': acc_type, 'bal': balance, 'target': target, 'dd': drawdown})
+        INSERT INTO accounts (username, name, account_type, currency, initial_balance, target_payout, max_drawdown_limit)
+        VALUES (:user, :name, :type, :curr, :bal, :target, :dd)
+    """, {'user': username, 'name': name, 'type': acc_type, 'curr': currency, 'bal': balance, 'target': target, 'dd': drawdown})
 
-def add_trade(account_id, symbol, direction, date, quantity, pnl, status, 
+def add_trade(account_id, symbol, direction, date, quantity, pnl, risked_amount, status, 
               session, rules, trend, setup, proper_sl, event_day, notes):
     run_query("""
         INSERT INTO trades (
-            account_id, symbol, direction, entry_date, quantity, pnl, status, 
+            account_id, symbol, direction, entry_date, quantity, pnl, risked_amount, status, 
             session, rules_followed, trend, setup, proper_sl, is_event_day, notes
         )
-        VALUES (:acc_id, :sym, :dir, :date, :qty, :pnl, :stat, 
+        VALUES (:acc_id, :sym, :dir, :date, :qty, :pnl, :risk, :stat, 
                 :sess, :rules, :trend, :setup, :sl, :evt, :note)
     """, {
         'acc_id': account_id, 'sym': symbol, 'dir': direction, 'date': date, 
-        'qty': quantity, 'pnl': pnl, 'stat': status, 'sess': session, 
+        'qty': quantity, 'pnl': pnl, 'risk': risked_amount, 'stat': status, 'sess': session, 
         'rules': rules, 'trend': trend, 'setup': setup, 'sl': proper_sl, 
         'evt': event_day, 'note': notes
     })
@@ -101,14 +117,10 @@ def delete_account(account_id):
     run_query("DELETE FROM accounts WHERE id = :id", {'id': account_id})
 
 def get_accounts(username):
-    # --- THIS IS THE FIX ---
-    # We do NOT use pd.read_sql here because it fails with parameters.
-    # We use conn.execute() directly.
     query = text("SELECT * FROM accounts WHERE username = :user")
     
     with engine.connect() as conn:
         result = conn.execute(query, {'user': username})
-        # Convert to DataFrame manually
         return pd.DataFrame(result.fetchall(), columns=result.keys())
 
 def get_trades(account_id=None):
