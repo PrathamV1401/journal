@@ -9,6 +9,8 @@ def get_engine():
     try:
         # Load the URL from secrets
         db_url = st.secrets["supabase"]["DB_URL"]
+        # Ensure psycopg2 driver is used explicitly (avoids "No module named 'psycopg'" error)
+        db_url = db_url.replace("postgresql://", "postgresql+psycopg2://", 1)
         return create_engine(db_url)
     except Exception as e:
         st.error(f"❌ Database Connection Error: {e}")
